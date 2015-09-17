@@ -874,6 +874,7 @@ void x509_print(const X509_CTX *cert, CA_CERT_CTX *ca_cert_ctx)
 
     TTY_FLUSH();
 }
+#endif
 
 const char * x509_display_error(int error)
 {
@@ -916,5 +917,5 @@ const char * x509_display_error(int error)
             return "Unknown";
     }
 }
-#endif      /* CONFIG_SSL_FULL_MODE */
+//#endif      /* CONFIG_SSL_FULL_MODE */
 
