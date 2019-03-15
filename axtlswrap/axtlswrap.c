@@ -55,8 +55,10 @@ int main(int argc, char *argv[])
 	int fd[2]; /* output from child */
 	int df[2]; /* input to child */
 	int pid;
-	unsigned char *readbuf;
 	int readlen;
+	unsigned char *readpt;
+	static unsigned char *readbuf = NULL;
+	int readbuf_len = 0;
 
 	SSL_CTX *ssl_ctx;
 	SSL *ssl;
@@ -125,7 +127,7 @@ int main(int argc, char *argv[])
 	}
 
 	/* Get past the handshaking */
-	while ((readlen = ssl_read(ssl, &readbuf)) == SSL_OK) 
+	while ((readlen = ssl_read(ssl, &readpt)) == SSL_OK) 
     {
 		/* Still handshaking */
 	}
@@ -171,7 +173,7 @@ int main(int argc, char *argv[])
 	if (pid > 0) 
     {
 		/* This is the parent */
-		unsigned char writebuf[4096];
+		static unsigned char writebuf[4096];
 		int writelen = 0;
 		struct pollfd pfd[3];
 		int timeout_count = 0;
@@ -190,6 +192,14 @@ int main(int argc, char *argv[])
 		pfd[0].fd = sslfd;
 		pfd[1].fd = cwfd;
 		pfd[2].fd = crfd;
+
+		/* Need to copy any remaining read data into readbuf */
+		if (readlen > readbuf_len) {
+			readbuf = realloc(readbuf, readlen);
+			readbuf_len = readlen;
+		}
+		memcpy(readbuf, readpt, readlen);
+
 
 		/* While the child is alive or there is something to return...  */
 		while (child_alive || writelen > 0) 
@@ -315,7 +325,7 @@ int main(int argc, char *argv[])
 			}
 			else if (pfd[0].revents & POLLIN) 
             {
-				readlen = ssl_read(ssl, &readbuf);
+				readlen = ssl_read(ssl, &readpt);
 				if (readlen <= 0 && opt_verbose) 
                 {
 					syslog(LOG_INFO, "ssl_read() returned %d", readlen);
@@ -328,6 +338,13 @@ int main(int argc, char *argv[])
 					break;
 				}
 			}
+
+			/* Copy read data into readbuf since ssl_write() shares a buffer with ssl_read() */
+			if (readlen > readbuf_len) {
+				readbuf = realloc(readbuf, readlen);
+				readbuf_len = readlen;
+			}
+			memcpy(readbuf, readpt, readlen);
 
 			if (pfd[1].revents & POLLNVAL) 
             {
