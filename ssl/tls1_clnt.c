@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2016, Cameron Rich
+ * Copyright (c) 2007-2019, Cameron Rich
  * 
  * All rights reserved.
  * 
@@ -47,18 +47,22 @@ static const uint8_t g_sig_alg[] = {
                 SIG_ALG_SHA1, SIG_ALG_RSA 
 };
 
+#ifndef CONFIG_SSL_PSK
 static const uint8_t g_asn1_sha256[] = 
 { 
     0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 
     0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20
 };
+#endif /* CONFIG_SSL_PSK */
 
 static int send_client_hello(SSL *ssl);
 static int process_server_hello(SSL *ssl);
 static int process_server_hello_done(SSL *ssl);
 static int send_client_key_xchg(SSL *ssl);
+#ifndef CONFIG_SSL_PSK
 static int process_cert_req(SSL *ssl);
 static int send_cert_verify(SSL *ssl);
+#endif /* CONFIG_SSL_PSK */
 
 /*
  * Establish a new SSL connection to an SSL server.
@@ -103,13 +107,16 @@ int do_clnt_handshake(SSL *ssl, int handshake_type, uint8_t *buf, int hs_len)
             ret = process_server_hello(ssl);
             break;
 
+#ifndef CONFIG_SSL_PSK
         case HS_CERTIFICATE:
             ret = process_certificate(ssl, &ssl->x509_ctx);
             break;
+#endif /* CONFIG_SSL_PSK */
 
         case HS_SERVER_HELLO_DONE:
             if ((ret = process_server_hello_done(ssl)) == SSL_OK)
             {
+#ifndef CONFIG_SSL_PSK
                 if (IS_SET_SSL_FLAG(SSL_HAS_CERT_REQ))
                 {
                     if ((ret = send_certificate(ssl)) == SSL_OK &&
@@ -122,6 +129,9 @@ int do_clnt_handshake(SSL *ssl, int handshake_type, uint8_t *buf, int hs_len)
                 {
                     ret = send_client_key_xchg(ssl);
                 }
+#else /* !CONFIG_SSL_PSK */
+                ret = send_client_key_xchg(ssl);
+#endif /* CONFIG_SSL_PSK */
 
                 if (ret == SSL_OK && 
                      (ret = send_change_cipher_spec(ssl)) == SSL_OK)
@@ -130,11 +140,11 @@ int do_clnt_handshake(SSL *ssl, int handshake_type, uint8_t *buf, int hs_len)
                 }
             }
             break;
-
+#ifndef CONFIG_SSL_PSK
         case HS_CERT_REQ:
             ret = process_cert_req(ssl);
             break;
-
+#endif /* CONFIG_SSL_PSK */
         case HS_FINISHED:
             ret = process_finished(ssl, buf, hs_len);
             disposable_free(ssl);   /* free up some memory */
@@ -357,9 +367,13 @@ static int process_server_hello(SSL *ssl)
 
     /* get the real cipher we are using - ignore MSB */
     ssl->cipher = buf[++offset];
+#ifndef CONFIG_SSL_PSK
     ssl->next_state = IS_SET_SSL_FLAG(SSL_SESSION_RESUME) ? 
                                         HS_FINISHED : HS_CERTIFICATE;
-
+#else /* !CONFIG_SSL_PSK */
+    ssl->next_state = IS_SET_SSL_FLAG(SSL_SESSION_RESUME) ? 
+                                        HS_FINISHED : HS_SERVER_HELLO_DONE;
+#endif /* CONFIG_SSL_PSK */
     offset += 2; // ignore compression
     PARANOIA_CHECK(pkt_size, offset);
 
@@ -386,12 +400,19 @@ static int process_server_hello_done(SSL *ssl)
 static int send_client_key_xchg(SSL *ssl)
 {
     uint8_t *buf = ssl->bm_data;
+#ifndef CONFIG_SSL_PSK
     uint8_t premaster_secret[SSL_SECRET_SIZE];
     int enc_secret_size = -1;
+#else /* CONFIG_SSL_PSK */
+    uint8_t premaster_secret[4+MAX_PSK_SIZE*2];  // two uint16s + double the psk (first is zeros)
+#endif
+    int cke_size = -1;
+    int premaster_secret_len = -1;
 
     buf[0] = HS_CLIENT_KEY_XCHG;
     buf[1] = 0;
 
+#ifndef CONFIG_SSL_PSK
     // spec says client must use the what is initially negotiated -
     // and this is our current version
     premaster_secret[0] = 0x03; 
@@ -411,11 +432,33 @@ static int send_client_key_xchg(SSL *ssl)
     buf[3] = (enc_secret_size + 2) & 0xff;
     buf[4] = enc_secret_size >> 8;
     buf[5] = enc_secret_size & 0xff;
+    cke_size = enc_secret_size+6;
+    premaster_secret_len = 48;
+#else /* CONFIG_SSL_PSK */
+    buf[2] = 0x00;
+    buf[3] = ssl->ssl_ctx->psk_identity_len + 2;
+    buf[4] = 0x00;
+    buf[5] = ssl->ssl_ctx->psk_identity_len;
+    memcpy(&buf[6], ssl->ssl_ctx->psk_identity, ssl->ssl_ctx->psk_identity_len);
+    cke_size = ssl->ssl_ctx->psk_identity_len + 6;
 
-    generate_master_secret(ssl, premaster_secret);
-    return send_packet(ssl, PT_HANDSHAKE_PROTOCOL, NULL, enc_secret_size+6);
+    premaster_secret[0] = 0x00;
+    premaster_secret[1] = ssl->ssl_ctx->preshared_key_len;
+    memset(&premaster_secret[2], 0x00, ssl->ssl_ctx->preshared_key_len);
+    premaster_secret[2+ssl->ssl_ctx->preshared_key_len] = 0x00;
+    premaster_secret[3+ssl->ssl_ctx->preshared_key_len] = 
+                ssl->ssl_ctx->preshared_key_len;
+    memcpy(&premaster_secret[4+ssl->ssl_ctx->preshared_key_len], 
+                ssl->ssl_ctx->preshared_key, 
+                ssl->ssl_ctx->preshared_key_len);
+    premaster_secret_len = 4+ssl->ssl_ctx->preshared_key_len*2;
+#endif
+
+    generate_master_secret(ssl, premaster_secret, premaster_secret_len);
+    return send_packet(ssl, PT_HANDSHAKE_PROTOCOL, NULL, cke_size);
 }
 
+#ifndef CONFIG_SSL_PSK
 /*
  * Process the certificate request.
  */
@@ -467,7 +510,9 @@ static int process_cert_req(SSL *ssl)
 error:
     return ret;
 }
+#endif /* CONFIG_SSL_PSK */
 
+#ifndef CONFIG_SSL_PSK
 /*
  * Send a certificate verify message.
  */
@@ -534,5 +579,6 @@ static int send_cert_verify(SSL *ssl)
 error:
     return ret;
 }
+#endif /* CONFIG_SSL_PSK */
 
 #endif      /* CONFIG_SSL_ENABLE_CLIENT */
