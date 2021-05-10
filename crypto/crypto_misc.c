@@ -101,6 +101,14 @@ int get_file(const char *filename, uint8_t **buf)
  * - On Linux use /dev/urandom
  * - If none of these work then use a custom RNG.
  */
+#ifdef __GNUC__
+// The stack-entropy-grabbing memcpy() is tagged as an error by gcc
+// -fsanitize=undefined.
+__attribute__((no_sanitize_address))
+#if __GNUC__ >= 5
+__attribute__((no_sanitize_undefined))
+#endif
+#endif
 EXP_FUNC void STDCALL RNG_initialize()
 {
 #if !defined(WIN32) && defined(CONFIG_USE_DEV_URANDOM)
