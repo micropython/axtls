@@ -164,11 +164,9 @@ EXP_FUNC void STDCALL RNG_terminate(void)
  */
 EXP_FUNC int STDCALL get_random(int num_rand_bytes, uint8_t *rand_data)
 {   
-#ifdef __ets__
-// see http://esp8266-re.foogod.com/wiki/Random_Number_Generator
-#define WDEV_HWRNG ((volatile uint32_t*)0x3ff20e44)
+#if defined(PLATFORM_RNG_U8)
     while (num_rand_bytes--) {
-        *rand_data++ = *WDEV_HWRNG;
+        *rand_data++ = PLATFORM_RNG_U8();
     }
 #elif !defined(WIN32) && defined(CONFIG_USE_DEV_URANDOM)
     /* use the Linux default - read from /dev/urandom */
